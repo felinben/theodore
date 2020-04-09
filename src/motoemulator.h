@@ -17,7 +17,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
 */
 
-/* Thomson TO8/TO9 emulator */
+/* Thomson MO/TO emulator */
 
 #ifndef __TOEMULATOR_H
 #define __TOEMULATOR_H
@@ -65,10 +65,10 @@ typedef enum { JOY0_UP, JOY0_DOWN, JOY0_LEFT, JOY0_RIGHT,
                JOY1_UP, JOY1_DOWN, JOY1_LEFT, JOY1_RIGHT,
                JOY0_FIRE, JOY1_FIRE } JoystickAxis;
 
-typedef enum { TO8, TO8D, TO9, TO9P } ThomsonFlavor;
+typedef enum { TO8, TO8D, TO9, TO9P, MO5, MO6, PC128, TO7, TO7_70 } ThomsonModel;
 
 // Returns the current level of the speaker as a signed 16-bit integer
-int16_t GetAudioSample();
+int16_t GetAudioSample(void);
 // Joystick emulation
 void Joysemul(JoystickAxis axis, bool isOn);
 // Keyboard emulation
@@ -79,10 +79,10 @@ void Initprog(void);
 int Run(int ncyclesmax);
 // Hardreset of the computer
 void Hardreset(void);
-// Sets the Thomson version emulated (default=TO8)
-void SetThomsonFlavor(ThomsonFlavor flavor);
-// Gets the currently emulated Thomson version
-ThomsonFlavor GetThomsonFlavor();
+// Sets the Thomson model emulated (default=TO8)
+void SetThomsonModel(ThomsonModel model);
+// Gets the currently emulated Thomson model
+ThomsonModel GetThomsonModel(void);
 
 // The following functions are used for libretro's save states feature.
 // Returns the amount of data required to serialize the whole state of the emulator.

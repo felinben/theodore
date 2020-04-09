@@ -1,7 +1,7 @@
 /*
  * This file is part of theodore (https://github.com/Zlika/theodore),
- * a Thomson emulator based on Daniel Coulom's DCTO8D emulator
- * (http://dcto8.free.fr/).
+ * a Thomson emulator based on Daniel Coulom's DCTO8D/DCTO9P/DCMO5
+ * emulators (http://dcmoto.free.fr/).
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -22,24 +22,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "toemulator.h"
+#include "motoemulator.h"
 #include "video.h"
 
-#define NB_VIDEO_MODES 5
+#define NB_VIDEO_MODES 6
 #define SEGMENT_SIZE  16
 
-typedef uint32_t PixARGB; // ARGB pixel
-typedef struct { int w, h; uint32_t* pixels;} Surface;
+typedef struct { int w, h; pixel_fmt_t* pixels;} Surface;
 
 // global variables //////////////////////////////////////////////////////////
 static Surface screen;
-static PixARGB pcolor[20][8];         //couleurs BGRA de la palette (pour 8 pixels)
+static pixel_fmt_t pcolor[20][8];     //couleurs BGRA de la palette (pour 8 pixels)
 static int currentvideomemory;        //index octet courant en memoire video thomson
 static int currentlinesegment;        //numero de l'octet courant dans la ligne video
-static uint32_t *pcurrentpixel;       //pointeur ecran : pixel courant
-static uint32_t *pcurrentline;        //pointeur ecran : debut ligne courante
-static uint32_t *pmin;                //pointeur ecran : premier pixel
-static uint32_t *pmax;                //pointeur ecran : dernier pixel + 1
+static pixel_fmt_t *pcurrentpixel;    //pointeur ecran : pixel courant
+static pixel_fmt_t *pcurrentline;     //pointeur ecran : debut ligne courante
+static pixel_fmt_t *pmin;             //pointeur ecran : premier pixel
+static pixel_fmt_t *pmax;             //pointeur ecran : dernier pixel + 1
 
 // Forward declarations
 static void Decode320x16(void);
@@ -47,18 +46,40 @@ static void Decode320x4(void);
 static void Decode320x4special(void);
 static void Decode160x16(void);
 static void Decode640x2(void);
+static void Decode320x16MO5(void);
 // Current video memory decoding function
 static void (*Decodevideo)(void) = Decode320x16;
 // Array of the different video memory decoding functions (indexed by the video mode)
 static void (*DecodevideoModes[NB_VIDEO_MODES])(void) =
   { Decode320x16, Decode320x4, Decode320x4special,
-    Decode160x16, Decode640x2 };
+    Decode160x16, Decode640x2, Decode320x16MO5 };
 
 //definition des intensites pour correction gamma (circuit palette EF9369 + circuit d'adaptation TEA5114)
 static const int intens[16] = {0,100,127,147,163,179,191,203,215,223,231,239,243,247,251,255};
 
-// Returns the uint32_t value of a ARGB pixel
-#define ARGB(a,r,g,b) (((a) << 24) + ((r) << 16) + ((g) << 8) + (b))
+// Returns the RGB565 value of a pixel.
+#define PIXEL(r,g,b) ((((r) << 8) &  0xf800) | (((g) << 3) & 0x7e0) | (((b) >> 3) & 0x1f))
+
+// Initialisation palette ////////////////////////////////////////////////////
+void InitPalette(void)
+{
+  int i, j;
+  // A la mise sous tension, le circuit palette est programmé pour restituer
+  // les couleurs fondamentales du TO7/70 :
+  // 0 noir, 1 rouge, 2 vert, 3 jaune, 4 bleu, 5 magenta, 6 cyan, 7 blanc
+  // 8 gris, 9 rose, 10 vert clair, 11 sable, 12 bleu clair, 13 parme, 14 bleu ciel, 15 orange
+  int r[19]={0,15,0,15,0,15,0,15,7,10,3,10,3,10,7,11,11,14,2};
+  int g[19]={0,0,15,15,0,0,15,15,7,3,10,10,3,3,14,3,11,14,2};
+  int b[19]={0,0,0,0,15,15,15,15,7,3,3,3,10,10,14,0,11,14,2};
+  // Calcul de la palette
+  for(i = 0; i < 19; i++)
+  {
+    for(j = 0; j < 8; j++)
+    {
+      pcolor[i][j] = PIXEL(intens[r[i]], intens[g[i]], intens[b[i]]);
+    }
+  }
+}
 
 // Modification de la palette ////////////////////////////////////////////////
 void Palette(int n, int r, int v, int b)
@@ -66,7 +87,7 @@ void Palette(int n, int r, int v, int b)
   int i;
   for(i = 0; i < 8; i++)
   {
-    pcolor[n][i] = ARGB(0xff, intens[r], intens[v], intens[b]);
+    pcolor[n][i] = PIXEL(intens[r], intens[v], intens[b]);
   }
 }
 
@@ -75,18 +96,34 @@ void SetVideoMode(enum VideoMode mode)
   Decodevideo = DecodevideoModes[mode];
 }
 
+// Decodage octet video mode 320x16 MO5 //////////////////////////////////////
+static void Decode320x16MO5(void)
+{
+  int i, c0, c1, shape;
+  pixel_fmt_t c;
+  c0 = pagevideo[currentvideomemory] & 0x0f;        //background color index
+  c1 = (pagevideo[currentvideomemory] >> 4) & 0x0f; //foreground color index
+  shape = pagevideo[currentvideomemory++ | 0x2000];
+  for(i = 7; i >= 0; i--)
+  {
+    c = *((pixel_fmt_t *)(pcolor + (((shape >> i) & 1) ? c1 : c0)));
+    *pcurrentpixel++ = c;
+    *pcurrentpixel++ = c;
+  }
+}
+
 // Decodage octet video mode 320x16 standard /////////////////////////////////
 static void Decode320x16(void)
 {
   int i, c0, c1, color, shape;
-  uint32_t c;
+  pixel_fmt_t c;
   shape = pagevideo[currentvideomemory | 0x2000];
   color = pagevideo[currentvideomemory++];
   c0 = (color & 0x07) | ((~color & 0x80) >> 4);        //background
   c1 = ((color >> 3) & 0x07) | ((~color & 0x40) >> 3); //foreground
   for(i = 7; i >= 0; i--)
   {
-    c = *((uint32_t *)(pcolor + (((shape >> i) & 1) ? c1 : c0)));
+    c = *((pixel_fmt_t *)(pcolor + (((shape >> i) & 1) ? c1 : c0)));
     *pcurrentpixel++ = c;
     *pcurrentpixel++ = c;
   }
@@ -96,12 +133,12 @@ static void Decode320x16(void)
 static void Decode320x4(void)
 {
   int i, c0, c1;
-  uint32_t c;
+  pixel_fmt_t c;
   c0 = pagevideo[currentvideomemory | 0x2000]; //color1
   c1 = pagevideo[currentvideomemory++];        //color2
   for(i = 7; i >= 0; i--)
   {
-    c = *((uint32_t *)(pcolor + (((c0 << 1) >> i & 2) | (c1 >> i & 1))));
+    c = *((pixel_fmt_t *)(pcolor + (((c0 << 1) >> i & 2) | (c1 >> i & 1))));
     *pcurrentpixel++ = c;
     *pcurrentpixel++ = c;
   }
@@ -111,12 +148,12 @@ static void Decode320x4(void)
 static void Decode320x4special(void)
 {
   int i, c0;
-  uint32_t c;
+  pixel_fmt_t c;
   c0 = pagevideo[currentvideomemory | 0x2000] << 8;
   c0 |= pagevideo[currentvideomemory++] & 0xff;
   for(i = 14; i >= 0; i -= 2)
   {
-    c = *((uint32_t *)(pcolor + (c0 >> i & 3)));
+    c = *((pixel_fmt_t *)(pcolor + (c0 >> i & 3)));
     *pcurrentpixel++ = c;
     *pcurrentpixel++ = c;
   }
@@ -126,12 +163,12 @@ static void Decode320x4special(void)
 static void Decode160x16(void)
 {
   int i, c0;
-  uint32_t c;
+  pixel_fmt_t c;
   c0 = pagevideo[currentvideomemory | 0x2000] << 8;
   c0 |= pagevideo[currentvideomemory++] & 0xff;
   for(i = 12; i >= 0; i -= 4)
   {
-    c = *((uint32_t *)(pcolor + (c0 >> i & 0x0f)));
+    c = *((pixel_fmt_t *)(pcolor + (c0 >> i & 0x0f)));
     *pcurrentpixel++ = c;
     *pcurrentpixel++ = c;
     *pcurrentpixel++ = c;
@@ -143,12 +180,12 @@ static void Decode160x16(void)
 static void Decode640x2(void)
 {
   int i, c0;
-  uint32_t c;
+  pixel_fmt_t c;
   c0 = pagevideo[currentvideomemory | 0x2000] << 8;
   c0 |= pagevideo[currentvideomemory++] & 0xff;
   for(i = 15; i >= 0; i--)
   {
-    c = *((uint32_t *)(pcolor + (((c0 >> i) & 1) ? 1 : 0)));
+    c = *((pixel_fmt_t *)(pcolor + (((c0 >> i) & 1) ? 1 : 0)));
     *pcurrentpixel++ = c;
   }
 }
@@ -157,8 +194,8 @@ static void Decode640x2(void)
 static void Displayborder(void)
 {
   int i;
-  uint32_t c;
-  c = *((uint32_t *)(pcolor + bordercolor));
+  pixel_fmt_t c;
+  c = *((pixel_fmt_t *)(pcolor + bordercolor));
   for (i = 0; i < SEGMENT_SIZE; i++)
   {
     *pcurrentpixel++ = c;
@@ -185,14 +222,14 @@ void Displaysegment(void)
 // Changement de ligne ecran //////////////////////////////////////////////////
 void Nextline(void)
 {
-  uint32_t *p0, *p1;
+  pixel_fmt_t *p0, *p1;
   p1 = pmin + (videolinenumber - 47) * 2 * XBITMAP;
   if(videolinenumber == 263) p1 = pmax;
   p0 = pcurrentline;
   pcurrentline += XBITMAP;
   while(pcurrentline < p1)
   {
-    memcpy(pcurrentline, p0, sizeof(uint32_t) * XBITMAP);
+    memcpy(pcurrentline, p0, sizeof(pixel_fmt_t) * XBITMAP);
     pcurrentline += XBITMAP;
   }
   if(pcurrentline == pmax)
@@ -219,7 +256,7 @@ static void InitScreen(void)
   videolinecycle = 0; videolinenumber = 0;
 }
 
-void SetLibRetroVideoBuffer(uint32_t *video_buffer)
+void SetLibRetroVideoBuffer(pixel_fmt_t *video_buffer)
 {
   screen.w = XBITMAP;
   screen.h = YBITMAP;
